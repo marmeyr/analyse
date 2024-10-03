@@ -1,0 +1,228 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+I.Traitement data
+
+```{r}
+library(ggplot2)
+
+options(repr.plot.width = 12, repr.plot.height = 8)
+
+library(glmnet)
+
+library(caTools)
+```
+```{r}
+#Lire des données
+file_path <- "C:/Users/linhc/OneDrive/Documents/full.csv"
+data <- read.csv(file = file_path, stringsAsFactors = FALSE)
+head(data)
+```
+
+
+```{r}
+#Explorer les données
+print(paste("Number of records: ", nrow(data)))
+print(paste("Number of features: ", ncol(data)))
+```
+```{r}
+#Résumé des données
+summary(data)
+```
+```{r}
+#Vérifiez le rapport nul des données
+# Initialisez un vecteur vide pour stocker les noms des colonnes à supprimer
+drop_col <- c()
+
+# Parcourez les colonnes du DataFrame
+for (col in names(data)) {
+  missing <- round((sum(is.na(data[[col]])) * 100) / length(data[[col]]), 2)
+  cat(col, missing, "%\n")
+
+# Vérifiez si le pourcentage manquant est supérieur à 80
+  if (missing > 80) {
+    drop_col <- c(drop_col, col)
+  }
+}
+drop_col <- c(drop_col , 'code_nature_culture_speciale', 'nature_culture_speciale')
+# drop_col contient désormais les noms des colonnes avec plus de 80 % de valeurs manquantes
+print(drop_col)
+```
+
+Nous voyons que des colonnes comme ancien_code_commune, lot1_surface_carrez, lot2_surface_carrez, ... ont un ratio Null supérieur à 80%, nous allons donc supprimer ces colonnes.
+```{r}
+# Suppression de colonnes du DataFrame
+data <- data[, !(names(data) %in% drop_col)]
+
+# Taille d'impression du DataFrame
+cat("Number of rows:", nrow(data), "\n")
+cat("Number of columns:", ncol(data), "\n")
+
+# Impression de la somme des valeurs en double
+cat("Number of duplicate rows:", sum(duplicated(data)), "\n")
+```
+Cependant, après la suppression des colonnes Null, les valeurs Null restent dans d'autres colonnes, nous allons donc procéder à la suppression des valeurs Null dans l'ensemble de données.
+```{r}
+data <- na.omit(data) # Supprime NA
+#Effectuer la suppression des doublons
+data <- data[!duplicated(data), ]
+#Réinitialiser les données d'index
+data <- data                           # Duplicattion de data
+rownames(data) <- NULL                 # Réinitialisation rownames
+data   
+```
+II.Visualisation de données
+
+```{r}
+#install.packages("cli")
+#install.packages("plotly")  # Si ce n'est pas déjà fait
+library(plotly)
+labels <- c('Donées Manquantes', 'Maison', 'Appartement', 'Dépendance', 'Local industriel. commercial ou assimilé')
+values <- c(41, 21.4, 18, 12.9, 0.37)
+colors <- c('#ff9999','#66b3ff','#99ff99','#ffcc99','#fffc52')
+
+# Créer le diagramme circulaire
+fig <- plot_ly(labels = ~labels, values = ~values, type = 'pie',
+               textinfo = 'label+percent',
+               insidetextorientation = 'radial',
+               marker = list(colors = colors),
+               pull = c(0.05, 0.05, 0.1, 0.1, 0.1)) %>% 
+        layout(title = 'Distribuer la variable type_local',
+               xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+               yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE))
+
+# Afficher le diagramme
+fig
+
+```
+
+Relation entre la valeur foncière et le département code, regroupant les 20 premiers code_departements avec la valeur_foncière la plus élevée
+```{r}
+
+library(dplyr)
+library(magrittr)
+class(data)
+# Regrouper par 'code_departement', additionner 'valeur_fonciere', trier et obtenir le top 20
+nature <- data %>%
+  group_by(code_departement) %>%
+  summarise(sum = sum(valeur_fonciere, na.rm = TRUE)) %>%
+  arrange(desc(sum)) %>%
+  slice_max(order_by = sum, n = 20)
+
+# Créez un tracé à barres interactif avec plotly
+fig <- plot_ly(nature, x = ~code_departement, y = ~sum, type = 'bar', marker = list(color = ~sum))
+
+# Afficher
+fig %>% layout(yaxis = list(title = "Sum"), xaxis = list(title = "Code Departement"))
+```
+
+
+Relation entre surface_terrain et code_departement, combinant les 20 premiers code_departements avec le surface_terrain le plus élevé
+```{r}
+# Regrouper par 'nature_culture', additionner 'valeur_fonciere', trier et obtenir le top 6
+nature <- data %>%
+  group_by(nature_culture) %>%
+  summarise(sum = sum(valeur_fonciere, na.rm = TRUE)) %>%
+  arrange(desc(sum)) %>%
+  head(6)
+
+# Créez un tracé à barres interactif avec plotly
+fig <- plot_ly(nature, x = ~nature_culture, y = ~sum, type = 'bar', marker = list(color = ~sum))
+
+# Afficher
+fig %>% layout(yaxis = list(title = "Sum"), xaxis = list(title = "Nature Culture"))
+```
+II.Construire le modèle
+```{r}
+set.seed(123)  # For reproducible results
+split <- sample.split(Y, SplitRatio = 0.8)
+
+train_data <- subset(data, split == TRUE)
+test_data <- subset(data, split == FALSE)
+
+# Splitting predictors and response for training and test sets
+X_train <- train_data[, c("numero_disposition" ,"nombre_lots" , "code_type_local" , "nombre_pieces_principales" , "surface_terrain" , "longitude" , "latitude")]
+Y_train <- train_data$valeur_fonciere
+
+X_test <- test_data[, c("numero_disposition" ,"nombre_lots" , "code_type_local" , "nombre_pieces_principales" , "surface_terrain" , "longitude" , "latitude")]
+Y_test <- test_data$valeur_fonciere
+```
+1.Modèle 1: Régression linaire 
+```{r}
+linearmodel = lm(valeur_fonciere~numero_disposition + nombre_lots + code_type_local + surface_reelle_bati + nombre_pieces_principales + surface_terrain + longitude + latitude,data = data)
+summary(linearmodel)
+```
+2.Modèle 2: Régression Lasso 
+```{r}
+# Standardiser les prédicteurs pour Lasso
+X_train_matrix <- as.matrix(scale(X_train))
+
+# Ajuster le modèle Lasso
+cv.lasso <- cv.glmnet(X_train_matrix, Y_train, alpha = 1)
+best.lambda <- cv.lasso$lambda.min
+
+lasso.model <- glmnet(X_train_matrix, Y_train, alpha = 1, lambda = best.lambda)
+```
+```{r}
+# Préparation des données de test pour Lasso (normalisation en utilisant la moyenne et l'écart-type d'entraînement)
+
+X_test_matrix <- as.matrix(scale(X_test, center = attr(X_train_matrix, "scaled:center"), scale = attr(X_train_matrix, "scaled:scale")))
+
+# Prédictions
+predictions_lasso <- predict(lasso.model, s = best.lambda, newx = X_test_matrix)
+predictions_linear <- predict(linearmodel, newdata = test_data)
+
+
+```
+```{r}
+# Évaluer les prédictions, par exemple en utilisant RMSE, MAE, R²
+# MSE
+
+library(Metrics)
+
+mse_lasso <- mse(Y_test, predictions_lasso)
+mse_linear <- mse(Y_test, predictions_linear)
+
+# RMSE
+rmse_lasso <- sqrt(mse_lasso)
+rmse_linear <- sqrt(mse_linear)
+
+cat("rmse_lasso = ", rmse_lasso) 
+cat("\nrmse_linear = ", rmse_linear) 
+
+# MAE
+mae_lasso <- mae(Y_test, predictions_lasso)
+mae_linear <- mae(Y_test, predictions_linear)
+
+cat("\nmae_lasso = ", mae_lasso) 
+cat("\nmae_linear = ", mae_linear) 
+
+# R² for Linear Regression
+r_squared_linear <- summary(linearmodel)$r.squared
+
+# R² for Lasso
+# Sum of Squares Total
+SST <- sum((Y_test - mean(Y_test))^2)
+# Sum of Squares Residual
+SSR <- sum((Y_test - predictions_lasso)^2)
+# R²
+r_squared_lasso <- 1 - SSR/SST
+
+cat("\nr_squared_linear = ", r_squared_linear) 
+cat("\nr_squared_lasso = ", r_squared_lasso) 
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
